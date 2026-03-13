@@ -1,0 +1,2 @@
+*.pkl filter=lfs diff=lfs merge=lfs -text
+ai_backend/voice_assets/** filter=lfs diff=lfs merge=lfs -text
