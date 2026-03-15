@@ -25,6 +25,7 @@ Render will read `render.yaml` and create both services.
 
 On service `fit-coach-ai-frontend`, set:
 
+- `VITE_AI_BACKEND_URL` (set this to your backend Render URL, for example `https://fit-coach-ai-backend.onrender.com`)
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_ANON_KEY` (or `VITE_SUPABASE_PUBLISHABLE_KEY`)
 

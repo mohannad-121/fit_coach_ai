@@ -19,19 +19,15 @@ services:
   - type: web
     name: fit-coach-ai-frontend
     env: static
-    buildCommand: npm ci && npm run build
+    buildCommand: npm install && npm run build
     staticPublishPath: dist
-    pullRequestPreviewsEnabled: false
     routes:
       - type: rewrite
         source: /*
         destination: /index.html
     envVars:
       - key: VITE_AI_BACKEND_URL
-        fromService:
-          type: web
-          name: fit-coach-ai-backend
-          property: url
+        sync: false
       - key: VITE_SUPABASE_URL
         sync: false
       - key: VITE_SUPABASE_ANON_KEY
