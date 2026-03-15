@@ -19,7 +19,7 @@ cd ai_backend
 python -m uvicorn main:app --reload --host 127.0.0.1 --port 8010
 ```
 
-## Free AI alternatives (no Lovable)
+## Free AI alternatives 
 
 You can run the chat with free/local providers:
 - Ollama local (recommended free): `http://127.0.0.1:11434`
