@@ -6,6 +6,7 @@ import re
 import json
 import uuid
 import shutil
+from functools import lru_cache
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -1150,6 +1151,7 @@ def _generate_nutrition_plan_options_from_dataset(
 
     options: list[dict[str, Any]] = []
     for program in selected:
+        restrictions = _build_food_restrictions(profile)
         calorie_range = program.get("calorie_range", {}) if isinstance(program.get("calorie_range"), dict) else {}
         cal_min = int(_to_float(calorie_range.get("min")) or 1800)
         cal_max = int(_to_float(calorie_range.get("max")) or max(cal_min, 2000))
@@ -1163,6 +1165,7 @@ def _generate_nutrition_plan_options_from_dataset(
         sample_meals = [m for m in program.get("sample_meals", []) if isinstance(m, dict)]
         if not sample_meals:
             sample_meals = [{"meal_type": "Meal", "description": "Balanced meal"}]
+        sample_meals = _filter_meals_by_restrictions(sample_meals, restrictions.get("tokens", set()))
 
         meals_per_day = int(profile.get("meals_per_day") or len(sample_meals) or 3)
         meals_per_day = max(2, min(6, meals_per_day))
@@ -1193,6 +1196,8 @@ def _generate_nutrition_plan_options_from_dataset(
         title_goal_ar = _dataset_text(program.get("goal"), "ar_fusha") or title_goal_en
         tips = program.get("tips", []) if isinstance(program.get("tips"), list) else []
         tips_text = " ".join(_dataset_text(tip, language) for tip in tips if str(tip).strip())
+        if restrictions.get("labels"):
+            tips_text = " ".join([tips_text, f"Avoid: {', '.join(restrictions['labels'])}."]).strip()
         est_protein = int(round((daily_calories * (protein_pct / 100.0)) / 4.0))
 
         options.append(
@@ -1208,6 +1213,7 @@ def _generate_nutrition_plan_options_from_dataset(
                 "days": days_payload,
                 "notes": tips_text,
                 "macro_split": {"protein_pct": protein_pct, "carbs_pct": carbs_pct, "fat_pct": fat_pct},
+                "forbidden_foods": list(restrictions.get("labels", [])),
                 "created_at": datetime.utcnow().isoformat(),
                 "source": "week2_nutrition_programs_dataset",
             }
@@ -1852,7 +1858,264 @@ def _calculate_calories(profile: dict[str, Any]) -> int:
     return max(1200, int(round(maintenance)))
 
 
-def _safe_meal_templates(allergies: list[str]) -> list[dict[str, Any]]:
+@lru_cache(maxsize=1)
+def _allergy_categories_from_dataset() -> set[str]:
+    candidates = [
+        BACKEND_DIR / "datasets" / "food_allergy_dataset.csv",
+        Path(r"D:\chatbot coach\Dataset\New folder\food_allergy_dataset.csv"),
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            import csv
+
+            with path.open("r", encoding="utf-8", errors="ignore", newline="") as f:
+                reader = csv.DictReader(f)
+                values = {str(row.get("Food_Type", "")).strip().lower() for row in reader if row.get("Food_Type")}
+                return {v for v in values if v}
+        except Exception:
+            continue
+    return set()
+
+
+ALLERGY_CATEGORY_TOKENS: dict[str, set[str]] = {
+    "gluten": {
+        "gluten",
+        "wheat",
+        "bread",
+        "flour",
+        "pasta",
+        "oats",
+        "barley",
+        "rye",
+        "قمح",
+        "خبز",
+        "طحين",
+        "معكرونة",
+        "شوفان",
+        "شعير",
+    },
+    "dairy": {
+        "milk",
+        "cheese",
+        "yogurt",
+        "butter",
+        "cream",
+        "milk",
+        "حليب",
+        "جبن",
+        "لبنة",
+        "زبادي",
+        "زبدة",
+        "قشطة",
+    },
+    "eggs": {
+        "egg",
+        "eggs",
+        "omelette",
+        "بيض",
+        "بياض",
+        "صفار",
+        "اومليت",
+    },
+    "nuts": {
+        "nuts",
+        "peanut",
+        "almond",
+        "walnut",
+        "cashew",
+        "hazelnut",
+        "pistachio",
+        "مكسرات",
+        "فول سوداني",
+        "لوز",
+        "جوز",
+        "كاجو",
+        "بندق",
+        "فستق",
+    },
+    "seafood": {
+        "seafood",
+        "fish",
+        "salmon",
+        "tuna",
+        "shrimp",
+        "crab",
+        "lobster",
+        "سمك",
+        "سلمون",
+        "تونة",
+        "جمبري",
+        "روبيان",
+        "سرطان",
+        "لوبستر",
+    },
+}
+
+CHRONIC_RESTRICTION_TOKENS: dict[str, set[str]] = {
+    "diabetes": {
+        "sugar",
+        "sweet",
+        "sweets",
+        "soda",
+        "juice",
+        "white bread",
+        "white rice",
+        "dessert",
+        "cake",
+        "chocolate",
+        "honey",
+        "jam",
+        "سكر",
+        "حلويات",
+        "عصير",
+        "مشروبات غازية",
+        "خبز ابيض",
+        "رز ابيض",
+        "كيك",
+        "شوكولاتة",
+        "عسل",
+        "مربى",
+    },
+    "hypertension": {
+        "salt",
+        "salty",
+        "sodium",
+        "pickle",
+        "processed",
+        "sausage",
+        "chips",
+        "soy sauce",
+        "ملح",
+        "مخللات",
+        "لحوم مصنعة",
+        "نقانق",
+        "شيبس",
+        "صلصة الصويا",
+    },
+    "heart": {
+        "fried",
+        "butter",
+        "ghee",
+        "cream",
+        "fatty",
+        "red meat",
+        "bacon",
+        "sausages",
+        "cheese",
+        "مقلي",
+        "زبدة",
+        "سمنة",
+        "دهون",
+        "لحمة دهنية",
+        "نقانق",
+        "جبن",
+    },
+    "cholesterol": {
+        "fried",
+        "butter",
+        "ghee",
+        "cream",
+        "fatty",
+        "red meat",
+        "bacon",
+        "sausages",
+        "cheese",
+        "مقلي",
+        "زبدة",
+        "سمنة",
+        "دهون",
+        "لحمة دهنية",
+        "نقانق",
+        "جبن",
+    },
+}
+
+
+def _text_contains_any(text: str, tokens: set[str]) -> bool:
+    normalized = normalize_text(text or "")
+    if not normalized or not tokens:
+        return False
+    return any(token and normalize_text(token) in normalized for token in tokens)
+
+
+def _build_food_restrictions(profile: dict[str, Any]) -> dict[str, Any]:
+    allergies = _parse_list_field(profile.get("allergies"))
+    chronic = _parse_list_field(profile.get("chronic_diseases"))
+
+    tokens: set[str] = set()
+    labels: list[str] = []
+
+    known_categories = _allergy_categories_from_dataset()
+
+    for allergy in allergies:
+        norm = normalize_text(allergy)
+        matched = False
+        for key, key_tokens in ALLERGY_CATEGORY_TOKENS.items():
+            if key in norm or any(normalize_text(tok) in norm for tok in key_tokens):
+                tokens |= key_tokens
+                if key not in labels:
+                    labels.append(key)
+                matched = True
+        if not matched and norm:
+            tokens.add(allergy)
+            if allergy not in labels:
+                labels.append(allergy)
+
+    # If dataset categories exist, include them in labels when user mentions them.
+    for category in known_categories:
+        if category and any(category in normalize_text(a) for a in allergies):
+            if category not in labels:
+                labels.append(category)
+
+    for disease in chronic:
+        norm = normalize_text(disease)
+        if "diab" in norm or "سكر" in norm:
+            tokens |= CHRONIC_RESTRICTION_TOKENS["diabetes"]
+            labels.append("diabetes")
+            continue
+        if "ضغط" in norm or "hypertension" in norm:
+            tokens |= CHRONIC_RESTRICTION_TOKENS["hypertension"]
+            labels.append("hypertension")
+            continue
+        if "قلب" in norm or "heart" in norm:
+            tokens |= CHRONIC_RESTRICTION_TOKENS["heart"]
+            labels.append("heart")
+            continue
+        if "كوليسترول" in norm or "cholesterol" in norm:
+            tokens |= CHRONIC_RESTRICTION_TOKENS["cholesterol"]
+            labels.append("cholesterol")
+
+    return {
+        "tokens": {t for t in tokens if t},
+        "labels": labels,
+        "allergies": allergies,
+        "chronic_diseases": chronic,
+    }
+
+
+def _filter_meals_by_restrictions(meals: list[dict[str, Any]], restriction_tokens: set[str]) -> list[dict[str, Any]]:
+    if not meals or not restriction_tokens:
+        return meals
+    filtered: list[dict[str, Any]] = []
+    for meal in meals:
+        haystack = " ".join(
+            [
+                str(meal.get("meal_type", "")),
+                str(meal.get("description", "")),
+                str(meal.get("name", "")),
+                str(meal.get("descriptionAr", "")),
+                str(meal.get("nameAr", "")),
+            ]
+        )
+        if _text_contains_any(haystack, restriction_tokens):
+            continue
+        filtered.append(meal)
+    return filtered if filtered else meals
+
+
+def _safe_meal_templates(allergies: list[str], restriction_tokens: set[str] | None = None) -> list[dict[str, Any]]:
     templates = [
         {"name": "Greek Yogurt + Oats + Berries", "calories": 420, "protein": 28, "carbs": 48, "fat": 12, "ingredients": ["yogurt", "oats", "berries"]},
         {"name": "Egg Omelette + Whole Grain Bread", "calories": 460, "protein": 32, "carbs": 34, "fat": 20, "ingredients": ["egg", "bread", "vegetables"]},
@@ -1865,6 +2128,8 @@ def _safe_meal_templates(allergies: list[str]) -> list[dict[str, Any]]:
     ]
 
     allergy_tokens = {a.lower() for a in allergies}
+    if restriction_tokens:
+        allergy_tokens |= {t.lower() for t in restriction_tokens}
     safe: list[dict[str, Any]] = []
     for meal in templates:
         ingredients_text = " ".join(meal["ingredients"]).lower()
@@ -1879,8 +2144,9 @@ def _build_nutrition_days(profile: dict[str, Any], calories_target: int) -> tupl
     meals_per_day = max(3, min(6, meals_per_day))
     allergies = _parse_list_field(profile.get("allergies"))
     chronic = [d.lower() for d in _parse_list_field(profile.get("chronic_diseases"))]
+    restrictions = _build_food_restrictions(profile)
 
-    meal_templates = _safe_meal_templates(allergies)
+    meal_templates = _safe_meal_templates(allergies, restrictions.get("tokens", set()))
     meal_templates.sort(key=lambda m: m["calories"])
 
     if any("diab" in x or "سكر" in x for x in chronic):
@@ -1929,6 +2195,7 @@ def _generate_nutrition_plan(profile: dict[str, Any], language: str) -> dict[str
     days, avg_daily_protein = _build_nutrition_days(profile, calories_target)
     chronic = _parse_list_field(profile.get("chronic_diseases"))
     allergies = _parse_list_field(profile.get("allergies"))
+    restrictions = _build_food_restrictions(profile)
     kb_query_parts = [
         "nutrition meal plan",
         str(profile.get("goal", "") or ""),
@@ -1944,6 +2211,8 @@ def _generate_nutrition_plan(profile: dict[str, Any], language: str) -> dict[str
         notes.append(f"Adjusted for chronic conditions: {', '.join(chronic)}.")
     if allergies:
         notes.append(f"Avoided allergens: {', '.join(allergies)}.")
+    if restrictions.get("labels"):
+        notes.append(f"Restricted foods based on profile: {', '.join(restrictions['labels'])}.")
 
     title = "AI Nutrition Plan"
     title_ar = "خطة تغذية ذكية"
@@ -1961,6 +2230,7 @@ def _generate_nutrition_plan(profile: dict[str, Any], language: str) -> dict[str
         "meals_per_day": int(profile.get("meals_per_day", 4)),
         "days": days,
         "notes": " ".join(notes).strip(),
+        "forbidden_foods": list(restrictions.get("labels", [])),
         "reference_notes": reference_notes,
         "created_at": datetime.utcnow().isoformat(),
     }
@@ -2524,11 +2794,12 @@ def _extract_tracking_summary_from_message(
         goal_payload["type"] = goal_type
         has_tracking_signal = True
 
-    number_pattern = r"(-?\d+(?:\.\d+)?)"
+    number_pattern = r"([+-]?\d+(?:\.\d+)?)(?:\s*\+)?"
     current_weight = _extract_float_from_patterns(
         source,
         [
             rf"(?:current[_\s-]*weight|weight[_\s-]*now|وزن(?:ي)?\s*(?:الحالي|الان|الآن)?)\s*[:=]?\s*{number_pattern}",
+            rf"(?:وزن(?:ي)?|وزني)\s*[:=]?\s*{number_pattern}",
             rf"(?:goal\.current_weight|current_weight)\s*[:=]?\s*{number_pattern}",
         ],
     )
@@ -2536,6 +2807,7 @@ def _extract_tracking_summary_from_message(
         source,
         [
             rf"(?:target[_\s-]*weight|goal[_\s-]*weight|الوزن\s*(?:المستهدف|الهدف)|هدف(?:ي)?\s*وزن)\s*[:=]?\s*{number_pattern}",
+            rf"(?:هدفي|هدف(?:ي)?)\s*[:=]?\s*{number_pattern}",
             rf"(?:goal\.target_weight|target_weight)\s*[:=]?\s*{number_pattern}",
         ],
     )
@@ -2546,6 +2818,23 @@ def _extract_tracking_summary_from_message(
             rf"(?:weekly_stats\.weight_change|weight_change)\s*[:=]?\s*{number_pattern}",
         ],
     )
+
+    if weekly_weight_change is None:
+        gain_match = re.search(
+            rf"(?:زاد(?:ت)?\s*وزن(?:ي)?|وزن(?:ي)?\s*زاد|وزن(?:ي)?\s*بزيد|وزن(?:ي)?\s*عم\s*يزيد|زيادة\s*وزن(?:ي)?)\s*(?:بالاسبوع|بالأسبوع|اسبوعي|أسبوعي)?\s*[:=]?\s*{number_pattern}",
+            source,
+            flags=re.IGNORECASE,
+        )
+        loss_match = re.search(
+            rf"(?:نقص(?:ت)?\s*وزن(?:ي)?|وزن(?:ي)?\s*نقص|وزن(?:ي)?\s*بنقص|وزن(?:ي)?\s*عم\s*ينقص|نزول\s*وزن(?:ي)?|خسرت\s*وزن(?:ي)?)\s*(?:بالاسبوع|بالأسبوع|اسبوعي|أسبوعي)?\s*[:=]?\s*{number_pattern}",
+            source,
+            flags=re.IGNORECASE,
+        )
+        if gain_match:
+            weekly_weight_change = _to_float(gain_match.group(1))
+        elif loss_match:
+            loss_value = _to_float(loss_match.group(1))
+            weekly_weight_change = -abs(loss_value) if loss_value is not None else None
     monthly_weight_change = _extract_float_from_patterns(
         source,
         [
@@ -3126,32 +3415,28 @@ def _status_label(language: str, status: str) -> str:
 
 def _performance_missing_data_reply(language: str, missing_fields: list[str]) -> str:
     fields_text = ", ".join(missing_fields)
-    template = (
-        '{'
-        '"goal":{"type":"weight_loss","current_weight":92,"target_weight":85},'
-        '"weekly_stats":{"workout_days":4,"planned_days":5,"avg_calories":2200,"avg_protein":160,"sleep_avg_hours":6.5,"weight_change":-0.5,"weight_change_history":[-0.6,-0.4,-0.5,-0.5]},'
-        '"monthly_stats":{"weight_change":-2,"strength_increase_percent":8,"consistency_percent":78}'
-        '}'
+    quick_example = (
+        "وزني الحالي 92، هدفي 85، تغير وزني الأسبوعي -0.5"
     )
     return _lang_reply(
         language,
         (
-            "I cannot run a precise performance analysis yet because key data is missing: "
-            f"{fields_text}.\n"
-            "Please send `tracking_summary` in this structure (or paste these fields directly in your message):\n"
-            f"{template}"
+            "I can estimate how long is left, but I need a few missing details: "
+            f"{fields_text}. "
+            "Send them in plain text, for example: "
+            f"{quick_example}"
         ),
         (
-            "لا أستطيع إجراء تحليل أداء دقيق الآن لأن بيانات أساسية ناقصة: "
-            f"{fields_text}.\n"
-            "أرسل `tracking_summary` بهذا الشكل (أو أرسل نفس الحقول مباشرة داخل الرسالة):\n"
-            f"{template}"
+            "بقدر أحسب لك كم ضايل، بس ناقصني شوية بيانات: "
+            f"{fields_text}. "
+            "ابعثهم كتابة بشكل بسيط مثل: "
+            f"{quick_example}"
         ),
         (
-            "ما بقدر أعمل تحليل أداء دقيق هسا لأن في بيانات ناقصة: "
-            f"{fields_text}.\n"
-            "ابعت `tracking_summary` بهي الصيغة (أو ابعت نفس الحقول مباشرة بالرسالة):\n"
-            f"{template}"
+            "بقدر أحسب لك قديش ضايل، بس ناقصني بيانات: "
+            f"{fields_text}. "
+            "ابعتهم بشكل بسيط مثل: "
+            f"{quick_example}"
         ),
     )
 
@@ -3889,6 +4174,13 @@ async def chat(req: ChatRequest) -> ChatResponse:
             data=ml_data,
         )
 
+    # Always give priority to deterministic dataset replies before any routing/LLM work.
+    # This fixes cases where intents were defined in conversation_intents.json but never surfaced.
+    dataset_reply = _dataset_conversation_reply(user_input, language)
+    if dataset_reply:
+        memory.add_assistant_message(dataset_reply)
+        return ChatResponse(reply=dataset_reply, conversation_id=conversation_id, language=language)
+
     if CHAT_RESPONSE_MODE != "dataset_only":
         in_domain, _score = ROUTER.is_in_domain(user_input, language=language)
         if (not in_domain) and _contains_any(user_input, STRONG_DOMAIN_KEYWORDS):
@@ -4392,11 +4684,3 @@ def get_progress(user_id: str) -> dict[str, Any]:
         "date": datetime.utcnow().isoformat(),
         "summary": state.get("last_progress_summary", {}),
     }
-
-
-
-
-
-
-
-
