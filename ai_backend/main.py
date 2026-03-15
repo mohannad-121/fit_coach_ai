@@ -281,6 +281,10 @@ PERFORMANCE_ANALYSIS_KEYWORDS = {
     "ضايلي",
     "ضايل",
     "ضايل لهدفي",
+    "كم ضلني",
+    "قديش ضلني",
+    "ضلني",
+    "قديش ضل",
     "remaining time",
     "time to goal",
     "remaining weeks",
@@ -2821,12 +2825,12 @@ def _extract_tracking_summary_from_message(
 
     if weekly_weight_change is None:
         gain_match = re.search(
-            rf"(?:زاد(?:ت)?\s*وزن(?:ي)?|وزن(?:ي)?\s*زاد|وزن(?:ي)?\s*بزيد|وزن(?:ي)?\s*عم\s*يزيد|زيادة\s*وزن(?:ي)?)\s*(?:بالاسبوع|بالأسبوع|اسبوعي|أسبوعي)?\s*[:=]?\s*{number_pattern}",
+            rf"(?:زاد(?:ت)?\s*وزن(?:ي)?|وزن(?:ي)?\s*زاد|وزن(?:ي)?\s*بزيد|وزن(?:ي)?\s*عم\s*يزيد|زيادة\s*وزن(?:ي)?)\s*(?:بالاسبوع|بالأسبوع|الاسبوع|الأسبوع|اسبوعي|أسبوعي)?\s*[:=]?\s*{number_pattern}",
             source,
             flags=re.IGNORECASE,
         )
         loss_match = re.search(
-            rf"(?:نقص(?:ت)?\s*وزن(?:ي)?|وزن(?:ي)?\s*نقص|وزن(?:ي)?\s*بنقص|وزن(?:ي)?\s*عم\s*ينقص|نزول\s*وزن(?:ي)?|خسرت\s*وزن(?:ي)?)\s*(?:بالاسبوع|بالأسبوع|اسبوعي|أسبوعي)?\s*[:=]?\s*{number_pattern}",
+            rf"(?:نقص(?:ت)?\s*وزن(?:ي)?|وزن(?:ي)?\s*نقص|وزن(?:ي)?\s*بنقص|وزن(?:ي)?\s*عم\s*ينقص|نزول\s*وزن(?:ي)?|خسرت\s*وزن(?:ي)?)\s*(?:بالاسبوع|بالأسبوع|الاسبوع|الأسبوع|اسبوعي|أسبوعي)?\s*[:=]?\s*{number_pattern}",
             source,
             flags=re.IGNORECASE,
         )
@@ -4064,13 +4068,6 @@ async def chat(req: ChatRequest) -> ChatResponse:
                 data={"plan_id": latest_plan_id},
             )
 
-    # Handle numeric progress/performance analysis before strict dataset fallback.
-    # This keeps the analytical path reachable even when strict intent matching is enabled.
-    if _is_performance_analysis_request(user_input, message_tracking_summary):
-        performance_reply = _performance_analysis_reply(language, profile, tracking_summary)
-        memory.add_assistant_message(performance_reply)
-        return ChatResponse(reply=performance_reply, conversation_id=conversation_id, language=language)
-
     # Strict dataset mode:
     # - Chat replies are sourced only from conversation_intents.json.
     # - Plan options are sourced only from workout_programs.json / nutrition_programs.json.
@@ -4173,6 +4170,12 @@ async def chat(req: ChatRequest) -> ChatResponse:
             action="ml_prediction",
             data=ml_data,
         )
+
+    # Handle numeric progress/performance analysis before routing decisions.
+    if _is_performance_analysis_request(user_input, message_tracking_summary):
+        performance_reply = _performance_analysis_reply(language, profile, tracking_summary)
+        memory.add_assistant_message(performance_reply)
+        return ChatResponse(reply=performance_reply, conversation_id=conversation_id, language=language)
 
     # Always give priority to deterministic dataset replies before any routing/LLM work.
     # This fixes cases where intents were defined in conversation_intents.json but never surfaced.
