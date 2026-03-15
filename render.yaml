@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: fit-coach-ai-backend
+    env: python
+    plan: free
+    rootDir: ai_backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: CHAT_RESPONSE_MODE
+        value: dataset_only
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: OPENAI_API_KEY
+        sync: false
+
+  - type: web
+    name: fit-coach-ai-frontend
+    env: static
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    pullRequestPreviewsEnabled: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_AI_BACKEND_URL
+        fromService:
+          type: web
+          name: fit-coach-ai-backend
+          property: url
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_ANON_KEY
+        sync: false
+      - key: VITE_SUPABASE_PUBLISHABLE_KEY
+        sync: false
