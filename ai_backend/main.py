@@ -166,6 +166,7 @@ NUTRITION_KB = KnowledgeEngine(Path(__file__).resolve().parent / "knowledge" / "
 RESPONSE_DATASET_DIR = _resolve_response_dataset_dir()
 RESPONSE_DATASETS = ResponseDatasets(RESPONSE_DATASET_DIR)
 CHAT_RESPONSE_MODE = os.getenv('CHAT_RESPONSE_MODE', 'ai_hybrid').strip().lower()
+AUTO_SELECT_PLANS = os.getenv("AUTO_SELECT_PLANS", "true").strip().lower() == "true"
 VOICE_STT = WhisperSTT(model_name=os.getenv("WHISPER_MODEL", "openai/whisper-base"))
 VOICE_TTS = LocalTTS(output_dir=STATIC_AUDIO_DIR)
 VOICE_PIPELINE = VoicePipeline(stt_engine=VOICE_STT, tts_engine=VOICE_TTS, llm_client=LLM)
@@ -475,6 +476,118 @@ STRONG_DOMAIN_KEYWORDS = {
     "\u0633\u0639\u0631\u0627\u062a",
     "\u0628\u0631\u0648\u062a\u064a\u0646",
     "\u0644\u064a\u0627\u0642\u0629",
+}
+
+PLACE_GYM_KEYWORDS = {
+    "gym",
+    "the gym",
+    "جيم",
+    "الجيم",
+    "بالجيم",
+    "في الجيم",
+    "نادي",
+    "النادي",
+    "بالنادي",
+    "في النادي",
+}
+
+PLACE_HOME_KEYWORDS = {
+    "home",
+    "at home",
+    "house",
+    "بيت",
+    "البيت",
+    "بالبيت",
+    "في البيت",
+    "من البيت",
+    "منزلي",
+    "تمرين منزلي",
+    "بدون جيم",
+    "بدون نادي",
+}
+
+GOAL_INTENT_HINTS = {
+    "goal",
+    "my goal",
+    "هدف",
+    "هدفي",
+    "بدي",
+    "أريد",
+    "اريد",
+    "عايز",
+    "حاب",
+    "نفسي",
+}
+
+MUSCLE_GAIN_HINTS = {
+    "muscle",
+    "muscle gain",
+    "gain muscle",
+    "build muscle",
+    "hypertrophy",
+    "bulk",
+    "تضخيم",
+    "زيادة عضل",
+    "زيادة العضلات",
+    "بناء عضل",
+    "بناء العضلات",
+    "كتلة عضلية",
+    "حجم العضلات",
+    "حجم الذراع",
+    "تكبير الذراع",
+    "تضخيم الذراع",
+    "زيادة حجم الذراع",
+    "عضلات",
+    "عضلة",
+}
+
+FAT_LOSS_HINTS = {
+    "fat loss",
+    "lose fat",
+    "lose weight",
+    "weight loss",
+    "cutting",
+    "تنشيف",
+    "خسارة وزن",
+    "نزول وزن",
+    "حرق دهون",
+    "نحف",
+    "تخسيس",
+}
+
+GENERAL_FITNESS_HINTS = {
+    "fitness",
+    "general fitness",
+    "health",
+    "لياقة",
+    "رشاقة",
+    "صحة",
+}
+
+PLAN_TYPE_WORKOUT_HINTS = {
+    "workout",
+    "training",
+    "gym",
+    "exercise",
+    "تمارين",
+    "تمرين",
+    "تدريب",
+    "جيم",
+    "الجيم",
+}
+
+PLAN_TYPE_NUTRITION_HINTS = {
+    "nutrition",
+    "diet",
+    "meal",
+    "food",
+    "تغذية",
+    "غذاء",
+    "اكل",
+    "أكل",
+    "حمية",
+    "دايت",
+    "وجبات",
 }
 
 ML_GOAL_QUERY_KEYWORDS = {
@@ -884,6 +997,14 @@ def _normalize_goal(goal: Any) -> str:
             "تضخيم",
             "زيادة عضل",
             "بناء عضل",
+            "زيادة العضلات",
+            "بناء العضلات",
+            "كتلة عضلية",
+            "حجم العضلات",
+            "حجم الذراع",
+            "تضخيم الذراع",
+            "تكبير الذراع",
+            "عضلات",
         },
     ):
         return "muscle_gain"
@@ -899,6 +1020,8 @@ def _normalize_goal(goal: Any) -> str:
             "خسارة وزن",
             "نزول وزن",
             "حرق دهون",
+            "نحف",
+            "تخسيس",
         },
     ):
         return "fat_loss"
@@ -911,6 +1034,117 @@ def _normalize_goal(goal: Any) -> str:
     if text in {"fitness", "general_fitness", "لياقة", "رشاقة"}:
         return "general_fitness"
     return text
+
+
+def _infer_goal_from_message(user_input: str) -> Optional[str]:
+    normalized = normalize_text(user_input)
+    if not normalized:
+        return None
+    direct = _normalize_goal(user_input)
+    if direct in {"muscle_gain", "fat_loss", "general_fitness"} and (
+        _contains_any(normalized, GOAL_INTENT_HINTS) or len(normalized.split()) <= 3
+    ):
+        return direct
+    if not _contains_any(normalized, GOAL_INTENT_HINTS):
+        return None
+    if _contains_any(normalized, MUSCLE_GAIN_HINTS):
+        return "muscle_gain"
+    if _contains_any(normalized, FAT_LOSS_HINTS):
+        return "fat_loss"
+    if _contains_any(normalized, GENERAL_FITNESS_HINTS):
+        return "general_fitness"
+    return None
+
+
+def _detect_place_choice(user_input: str) -> Optional[str]:
+    normalized = normalize_text(user_input)
+    if not normalized:
+        return None
+    if _contains_any(normalized, PLACE_GYM_KEYWORDS):
+        return "gym"
+    if _contains_any(normalized, PLACE_HOME_KEYWORDS):
+        return "home"
+    return None
+
+
+def _recent_assistant_asked_place(memory: MemorySystem) -> bool:
+    try:
+        history = memory.short_term.get_full_history()
+    except Exception:
+        return False
+    checked = 0
+    for msg in reversed(history):
+        if msg.get("role") != "assistant":
+            continue
+        text = normalize_text(msg.get("content", ""))
+        if not text:
+            continue
+        checked += 1
+        if ("gym" in text or "جيم" in text) and ("home" in text or "بيت" in text):
+            return True
+        if ("or" in text or "ولا" in text) and _contains_any(text, PLACE_GYM_KEYWORDS | PLACE_HOME_KEYWORDS):
+            return True
+        if checked >= 2:
+            break
+    return False
+
+
+def _recent_user_workout_context(memory: MemorySystem, current_message: str) -> bool:
+    try:
+        history = memory.short_term.get_full_history()
+    except Exception:
+        return False
+    normalized_current = normalize_text(current_message)
+    checked = 0
+    for msg in reversed(history):
+        if msg.get("role") != "user":
+            continue
+        text = normalize_text(msg.get("content", ""))
+        if not text:
+            continue
+        if normalized_current and text == normalized_current:
+            continue
+        checked += 1
+        if _contains_any(text, STRONG_DOMAIN_KEYWORDS):
+            return True
+        if _is_workout_plan_request(text):
+            return True
+        if checked >= 2:
+            break
+    return False
+
+
+def _detect_plan_type_choice(user_input: str) -> Optional[str]:
+    normalized = normalize_text(user_input)
+    if not normalized:
+        return None
+    if _contains_any(normalized, PLAN_TYPE_WORKOUT_HINTS):
+        return "workout"
+    if _contains_any(normalized, PLAN_TYPE_NUTRITION_HINTS):
+        return "nutrition"
+    return None
+
+
+def _recent_assistant_asked_plan_type(memory: MemorySystem) -> bool:
+    try:
+        history = memory.short_term.get_full_history()
+    except Exception:
+        return False
+    checked = 0
+    for msg in reversed(history):
+        if msg.get("role") != "assistant":
+            continue
+        text = normalize_text(msg.get("content", ""))
+        if not text:
+            continue
+        checked += 1
+        if ("تمارين" in text or "workout" in text) and ("تغذية" in text or "nutrition" in text):
+            return True
+        if ("ولا" in text or "or" in text) and _contains_any(text, PLAN_TYPE_WORKOUT_HINTS | PLAN_TYPE_NUTRITION_HINTS):
+            return True
+        if checked >= 2:
+            break
+    return False
 
 
 def _dataset_text(value: Any, language: str = "en") -> str:
@@ -2295,6 +2529,146 @@ def _format_plan_preview(plan_type: str, plan: dict[str, Any], language: str) ->
         f"جهزتلك خطة أكل: {calories} سعرة باليوم، {meals_count} وجبات باليوم.\n"
         f"عينة وجبات:\n{sample_text}\n\n"
         "بدك تعتمدها وتنزل على صفحة الجدول؟"
+    )
+
+
+def _register_pending_plan(
+    plan_type: str,
+    plan: dict[str, Any],
+    user_id: str,
+    conversation_id: str,
+    state: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    selected_plan = deepcopy(plan)
+    plan_id = str(selected_plan.get("id") or f"{plan_type}_{uuid.uuid4().hex[:10]}")
+    selected_plan["id"] = plan_id
+    PENDING_PLANS[plan_id] = {
+        "user_id": user_id,
+        "conversation_id": conversation_id,
+        "plan_type": plan_type,
+        "plan": selected_plan,
+        "approved": False,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    state["last_pending_plan_id"] = plan_id
+    return plan_id, selected_plan
+
+
+def _respond_with_plan_from_dataset(
+    plan_type: str,
+    user_input: str,
+    language: str,
+    profile: dict[str, Any],
+    tracking_summary: Optional[dict[str, Any]],
+    user_id: str,
+    conversation_id: str,
+    state: dict[str, Any],
+    memory: MemorySystem,
+    plan_intent_meta: Optional[dict[str, Any]] = None,
+) -> ChatResponse:
+    inferred_goal, inferred_confidence, inferred_by_ml = _infer_goal_for_plan(profile, tracking_summary)
+    plan_profile = dict(profile)
+    plan_profile["goal"] = inferred_goal
+
+    if plan_type == "nutrition":
+        options = _generate_nutrition_plan_options(plan_profile, language, count=5)
+    else:
+        options = _generate_workout_plan_options(plan_profile, language, count=5)
+
+    if not options:
+        reply = _dataset_intent_response("out_of_scope", language, seed=user_input) or _dataset_fallback_reply(
+            language, seed=user_input
+        )
+        memory.add_assistant_message(reply)
+        return ChatResponse(reply=reply, conversation_id=conversation_id, language=language)
+
+    info_lines: list[str] = []
+    if inferred_by_ml:
+        goal_label = _profile_goal_label(inferred_goal, language)
+        conf_text = (
+            f" ({_format_number((inferred_confidence or 0.0) * 100, 1)}%)"
+            if inferred_confidence is not None
+            else ""
+        )
+        info_lines.append(
+            _lang_reply(
+                language,
+                f"Auto-inferred goal from training data: {goal_label}{conf_text}.",
+                f"تم استنتاج الهدف تلقائيًا من بيانات التدريب: {goal_label}{conf_text}.",
+                f"استنتجت هدفك تلقائيًا من بيانات التدريب: {goal_label}{conf_text}.",
+            )
+        )
+
+    if plan_intent_meta:
+        predicted_intent = str(plan_intent_meta.get("predicted_intent", plan_type))
+        intent_confidence = _to_float(plan_intent_meta.get("confidence"))
+        conf_text = (
+            f" ({_format_number((intent_confidence or 0.0) * 100, 1)}%)"
+            if intent_confidence is not None
+            else ""
+        )
+        if _is_generic_plan_request(user_input):
+            info_lines.append(
+                _lang_reply(
+                    language,
+                    f"Detected plan type automatically: {predicted_intent}{conf_text}.",
+                    f"تم تحديد نوع الخطة تلقائيًا: {predicted_intent}{conf_text}.",
+                    f"حددّت نوع الخطة تلقائيًا: {predicted_intent}{conf_text}.",
+                )
+            )
+
+    if AUTO_SELECT_PLANS:
+        selected_plan = deepcopy(options[0])
+        plan_id, selected_plan = _register_pending_plan(
+            plan_type,
+            selected_plan,
+            user_id,
+            conversation_id,
+            state,
+        )
+        reply = _format_plan_preview(plan_type, selected_plan, language)
+        if info_lines:
+            reply = "\n".join(info_lines + [reply])
+        memory.add_assistant_message(reply)
+        return ChatResponse(
+            reply=reply,
+            conversation_id=conversation_id,
+            language=language,
+            action="ask_plan",
+            data={
+                "plan_id": plan_id,
+                "plan_type": plan_type,
+                "plan": selected_plan,
+                "inferred_goal": inferred_goal,
+                "inferred_goal_confidence": inferred_confidence,
+                "plan_intent_prediction": plan_intent_meta or {},
+            },
+        )
+
+    state["pending_plan_options"] = {
+        "plan_type": plan_type,
+        "options": options,
+        "conversation_id": conversation_id,
+    }
+    if inferred_by_ml:
+        state["inferred_goal"] = inferred_goal
+
+    reply = _format_plan_options_preview(plan_type, options, language)
+    if info_lines:
+        reply = "\n".join(info_lines + [reply])
+    memory.add_assistant_message(reply)
+    return ChatResponse(
+        reply=reply,
+        conversation_id=conversation_id,
+        language=language,
+        action="choose_plan",
+        data={
+            "plan_type": plan_type,
+            "options_count": len(options),
+            "inferred_goal": inferred_goal,
+            "inferred_goal_confidence": inferred_confidence,
+            "plan_intent_prediction": plan_intent_meta or {},
+        },
     )
 
 
@@ -4085,83 +4459,17 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
     requested_plan_type, plan_intent_meta = _resolve_plan_type_from_message(user_input)
     if requested_plan_type in {"workout", "nutrition"}:
-        inferred_goal, inferred_confidence, inferred_by_ml = _infer_goal_for_plan(profile, tracking_summary)
-        plan_profile = dict(profile)
-        plan_profile["goal"] = inferred_goal
-
-        if requested_plan_type == "workout":
-            options = _generate_workout_plan_options(plan_profile, language, count=5)
-        else:
-            options = _generate_nutrition_plan_options(plan_profile, language, count=5)
-
-        if not options:
-            reply = _dataset_intent_response("out_of_scope", language, seed=user_input) or _dataset_fallback_reply(
-                language, seed=user_input
-            )
-            memory.add_assistant_message(reply)
-            return ChatResponse(reply=reply, conversation_id=conversation_id, language=language)
-
-        state["pending_plan_options"] = {
-            "plan_type": requested_plan_type,
-            "options": options,
-            "conversation_id": conversation_id,
-        }
-        if inferred_by_ml:
-            state["inferred_goal"] = inferred_goal
-
-        reply = _format_plan_options_preview(requested_plan_type, options, language)
-
-        info_lines: list[str] = []
-        if inferred_by_ml:
-            goal_label = _profile_goal_label(inferred_goal, language)
-            conf_text = (
-                f" ({_format_number((inferred_confidence or 0.0) * 100, 1)}%)"
-                if inferred_confidence is not None
-                else ""
-            )
-            info_lines.append(
-                _lang_reply(
-                    language,
-                    f"Auto-inferred goal from training data: {goal_label}{conf_text}.",
-                    f"تم استنتاج الهدف تلقائيًا من بيانات التدريب: {goal_label}{conf_text}.",
-                    f"استنتجت هدفك تلقائيًا من بيانات التدريب: {goal_label}{conf_text}.",
-                )
-            )
-
-        if plan_intent_meta:
-            predicted_intent = str(plan_intent_meta.get("predicted_intent", requested_plan_type))
-            intent_confidence = _to_float(plan_intent_meta.get("confidence"))
-            conf_text = (
-                f" ({_format_number((intent_confidence or 0.0) * 100, 1)}%)"
-                if intent_confidence is not None
-                else ""
-            )
-            if _is_generic_plan_request(user_input):
-                info_lines.append(
-                    _lang_reply(
-                        language,
-                        f"Detected plan type automatically: {predicted_intent}{conf_text}.",
-                        f"تم تحديد نوع الخطة تلقائيًا: {predicted_intent}{conf_text}.",
-                        f"حددّت نوع الخطة تلقائيًا: {predicted_intent}{conf_text}.",
-                    )
-                )
-
-        if info_lines:
-            reply = "\n".join(info_lines + [reply])
-
-        memory.add_assistant_message(reply)
-        return ChatResponse(
-            reply=reply,
-            conversation_id=conversation_id,
-            language=language,
-            action="choose_plan",
-            data={
-                "plan_type": requested_plan_type,
-                "options_count": len(options),
-                "inferred_goal": inferred_goal,
-                "inferred_goal_confidence": inferred_confidence,
-                "plan_intent_prediction": plan_intent_meta or {},
-            },
+        return _respond_with_plan_from_dataset(
+            requested_plan_type,
+            user_input,
+            language,
+            profile,
+            tracking_summary,
+            user_id,
+            conversation_id,
+            state,
+            memory,
+            plan_intent_meta=plan_intent_meta,
         )
 
     ml_prediction_payload = _ml_prediction_chat_response(user_input, language, profile, tracking_summary)
@@ -4182,6 +4490,64 @@ async def chat(req: ChatRequest) -> ChatResponse:
         performance_reply = _performance_analysis_reply(language, profile, tracking_summary)
         memory.add_assistant_message(performance_reply)
         return ChatResponse(reply=performance_reply, conversation_id=conversation_id, language=language)
+
+    place_choice = _detect_place_choice(user_input)
+    if place_choice and (_recent_assistant_asked_place(memory) or _recent_user_workout_context(memory, user_input)):
+        state["workout_place"] = place_choice
+        return _respond_with_plan_from_dataset(
+            "workout",
+            user_input,
+            language,
+            profile,
+            tracking_summary,
+            user_id,
+            conversation_id,
+            state,
+            memory,
+        )
+
+    plan_type_choice = _detect_plan_type_choice(user_input)
+    if plan_type_choice and _recent_assistant_asked_plan_type(memory):
+        return _respond_with_plan_from_dataset(
+            plan_type_choice,
+            user_input,
+            language,
+            profile,
+            tracking_summary,
+            user_id,
+            conversation_id,
+            state,
+            memory,
+        )
+
+    goal_from_message = _infer_goal_from_message(user_input)
+    if goal_from_message:
+        state["goal"] = goal_from_message
+        profile["goal"] = goal_from_message
+        requested_plan_type, plan_intent_meta = _resolve_plan_type_from_message(user_input)
+        if requested_plan_type in {"workout", "nutrition"}:
+            return _respond_with_plan_from_dataset(
+                requested_plan_type,
+                user_input,
+                language,
+                profile,
+                tracking_summary,
+                user_id,
+                conversation_id,
+                state,
+                memory,
+                plan_intent_meta=plan_intent_meta,
+            )
+
+        goal_label = _profile_goal_label(goal_from_message, language)
+        reply = _lang_reply(
+            language,
+            f"Noted. Your goal is {goal_label}. Do you want a workout plan or a nutrition plan?",
+            f"تمام، هدفك {goal_label}. بدك خطة تمارين ولا تغذية؟",
+            f"تمام، هدفك {goal_label}. بدك خطة تمارين ولا تغذية؟",
+        )
+        memory.add_assistant_message(reply)
+        return ChatResponse(reply=reply, conversation_id=conversation_id, language=language)
 
     # Always give priority to deterministic dataset replies before any routing/LLM work.
     # This fixes cases where intents were defined in conversation_intents.json but never surfaced.
@@ -4217,9 +4583,9 @@ async def chat(req: ChatRequest) -> ChatResponse:
         if llm_reply.startswith("Ollama error:") or llm_reply.startswith("Ollama is not reachable"):
             llm_reply = _lang_reply(
                 language,
-                "Local AI is unavailable. This project runs free with Ollama. Start Ollama, run `ollama pull llama3.2:3b`, then retry.",
-                "الذكاء المحلي غير متاح حالياً. هذا المشروع مجاني عبر Ollama. شغّل Ollama ثم نفّذ `ollama pull llama3.2:3b` وبعدها أعد المحاولة.",
-                "الذكاء المحلي واقف حالياً. المشروع مجاني على Ollama. شغّل Ollama واعمل `ollama pull llama3.2:3b` وجرّب مرة ثانية.",
+                "The AI generator is unavailable right now. I can still build a plan from the datasets. Tell me your goal and whether you want a workout or nutrition plan.",
+                "المولّد الذكي غير متاح حالياً، لكن أقدر أجهّز لك خطة من ملفات الداتا سيت. احكيلي هدفك وبدك خطة تمارين ولا تغذية.",
+                "المولّد الذكي مش متاح هسا، بس بقدر أجهّزلك خطة من الداتا سيت. احكيلي هدفك وبدك تمارين ولا تغذية.",
             )
 
         filtered_reply, _ = MODERATION.filter_content(llm_reply, language=language)
@@ -4552,9 +4918,9 @@ async def chat(req: ChatRequest) -> ChatResponse:
     if llm_reply.startswith("Ollama error:"):
         llm_reply = _lang_reply(
             language,
-            "Local AI model is temporarily unavailable. Please make sure Ollama is running, then try again.",
-            "نموذج الذكاء المحلي غير متاح مؤقتًا. تأكد من تشغيل Ollama ثم أعد المحاولة.",
-            "نموذج الذكاء المحلي واقف مؤقتًا. شغّل Ollama وارجع جرّب.",
+            "The AI generator is unavailable right now. I can still build a plan from the datasets if you share your goal.",
+            "المولّد الذكي غير متاح حالياً، لكن أقدر أجهّز لك خطة من الداتا سيت إذا حكيت هدفك.",
+            "المولّد الذكي مش متاح هسا، بس بقدر أجهّزلك خطة من الداتا سيت إذا حكيت هدفك.",
         )
     filtered_reply, _ = MODERATION.filter_content(llm_reply, language=language)
     memory.add_assistant_message(filtered_reply)
