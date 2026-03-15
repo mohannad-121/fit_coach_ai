@@ -956,9 +956,6 @@ def _dataset_intent_response(tag: str, language: str, seed: str = "") -> Optiona
 def _dataset_conversation_reply(user_input: str, language: str) -> Optional[str]:
     # Priority order for conversational intents loaded from the provided dataset.
     ordered_tags: list[str] = [
-        "greeting",
-        "gratitude",
-        "goodbye",
         "ask_exercise",
         "ask_muscle",
         "ask_home_workout",
@@ -966,10 +963,19 @@ def _dataset_conversation_reply(user_input: str, language: str) -> Optional[str]
         "ask_weight_loss",
         "ask_muscle_gain",
         "ask_general_fitness",
+        "gratitude",
+        "goodbye",
+        "greeting",
     ]
+    normalized = normalize_text(user_input)
+    token_count = len(normalized.split()) if normalized else 0
+    is_short = token_count <= 4
+    has_domain_terms = _contains_any(normalized, STRONG_DOMAIN_KEYWORDS)
     known_tags = set(RESPONSE_DATASETS.intents.keys())
     for tag in ordered_tags:
         if tag not in known_tags:
+            continue
+        if tag == "greeting" and (not is_short or has_domain_terms):
             continue
         if _dataset_intent_matches(user_input, tag):
             return _dataset_intent_response(tag, language, seed=user_input)
